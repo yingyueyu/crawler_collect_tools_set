@@ -1,18 +1,8 @@
 from __future__ import annotations
 
 import os
-import sys
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Optional
-
-_ROOT = Path(__file__).resolve().parents[2]
-if str(_ROOT) not in sys.path:
-    sys.path.insert(0, str(_ROOT))
-
-from tools.key_token_config import MYSQL_TOOLS_DEFAULT
-
-_DEFAULT = MYSQL_TOOLS_DEFAULT
 
 
 @dataclass(frozen=True)
@@ -51,10 +41,10 @@ class MySQLConfig:
             return raw.strip().lower() in {"1", "true", "yes", "on"}
 
         return cls(
-            host=_get_str("HOST", _DEFAULT["host"]),
-            port=_get_int("PORT", _DEFAULT["port"]),
-            user=_get_str("USER", _DEFAULT["user"]),
-            password=_get_str("PASSWORD", _DEFAULT["password"]),
+            host=_get_str("HOST", "8.217.208.110"),
+            port=_get_int("PORT", 13306),
+            user=_get_str("USER", "Jude"),
+            password=_get_str("PASSWORD", "Super!*6data"),
             database=_get_str("DATABASE", ""),
             charset=_get_str("CHARSET", "utf8mb4"),
             connect_timeout=_get_int("CONNECT_TIMEOUT", 10),

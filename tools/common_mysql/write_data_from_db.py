@@ -1,7 +1,21 @@
 """
 MySQL 表数据流式读取工具：可选上传 Redis 任务队列，或直接写回 MySQL。
 
-适配 tools.common_mysql.MySQLConfig；Redis / 任务参数在文件底部 main() 或 StreamJobConfig 中配置。
+适配 tools.common_mysql.MySQLConfig；任务参数通过 CLI + profiles/*.json 配置。
+
+示例::
+
+  # 使用内置 maven 平台配置
+  python tools/common_mysql/write_data_from_db.py --platform maven
+
+  # 使用自定义 profile JSON
+  python tools/common_mysql/write_data_from_db.py --profile path/to/custom.json
+
+  # 覆盖部分参数
+  python tools/common_mysql/write_data_from_db.py --platform maven --batch-size 500
+
+  # 非 Redis 模式（仅读取 + 外部处理写回，见 example_non_redis_process_batch）
+  python tools/common_mysql/write_data_from_db.py --platform maven --no-redis
 
 Redis 上传格式示例（查询字段 purl, repo_id）::
     {"type": "dict", "field": ["purl", "repo_id"]}
@@ -28,6 +42,7 @@ Redis 上传格式示例（查询字段 purl, repo_id）::
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import json
 import logging
@@ -48,7 +63,6 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from tools.key_token_config import REDIS_GIT_GET_HTML
 from tools.common_mysql.config import MySQLConfig
 
 MYSQL_CFG = MySQLConfig.from_env()
@@ -1240,66 +1254,134 @@ async def run_stream_job(
         raise upload_error
 
 
-def build_job_from_main() -> StreamJobConfig:
-    """在 main() 中修改以下参数。"""
-    # ==================== MySQL ====================
-    DATABASE = "api_data"
-    TABLE = "maven_purl_html_bill_status_central"
-    COLUMNS = "purl, repo_id"
-    CURSOR_FIELD = "purl"
-    CONDITIONS = "is_finish = 0"
-
-    # ==================== 模式 ====================
-    USE_REDIS = True
-
-    # ==================== Redis ====================
-    REDIS_HOST = REDIS_GIT_GET_HTML["host"]
-    REDIS_PORT = REDIS_GIT_GET_HTML["port"]
-    REDIS_DB = REDIS_GIT_GET_HTML["db"]
-    REDIS_PASSWORD = None
-    QUEUE_KEY = "maven_html:urls"
-    SUCCESS_QUEUE_KEY = "maven_html:index_success_urls"
-
-    # ==================== Redis 上传格式 ====================
-    # text: 单字段字符串; dict: 多字段 JSON
-    UPLOAD_FORMAT = {"type": "dict", "field": ["purl", "repo_id"]}
-    # UPLOAD_FORMAT = {"type": "text", "field": "purl"}
-
-    # ==================== 写回字段 ====================
-    WRITEBACK = WritebackConfig(
-        id_field="purl",
-        pending_condition="is_finish = 0",
-        update_fields={"is_finish": 1, "updated_time": "NOW()"},
+def _build_redis_settings(data: dict | None) -> RedisSettings:
+    raw = data or {}
+    return RedisSettings(
+        host=str(raw.get("host", "127.0.0.1")),
+        port=int(raw.get("port", 6379)),
+        db=int(raw.get("db", 0)),
+        password=raw.get("password"),
+        queue_key=str(raw.get("queue_key", "")),
+        success_queue_key=str(raw.get("success_queue_key", "")),
     )
 
-    # ==================== 批次 ====================
-    BATCH_SIZE = 1000
-    MONITOR_INTERVAL = 2
-    THRESHOLD_RATIO = 0.2
-    SUCCESS_QUEUE_STABLE_SECONDS = 30
 
+def _build_writeback_config(data: dict | None) -> WritebackConfig:
+    raw = data or {}
+    update_fields = raw.get("update_fields")
+    if update_fields is None:
+        update_fields = {"is_finish": 1, "updated_time": "NOW()"}
+    return WritebackConfig(
+        id_field=str(raw.get("id_field", "purl")),
+        pending_condition=str(raw.get("pending_condition", "is_finish = 0")),
+        update_fields=update_fields,
+    )
+
+
+def build_stream_job_config(profile_data: dict) -> StreamJobConfig:
+    """将 profile 字典转为 StreamJobConfig。"""
     return StreamJobConfig(
-        database=DATABASE,
-        table=TABLE,
-        columns=COLUMNS,
-        conditions=CONDITIONS,
-        cursor_field=CURSOR_FIELD,
-        use_redis=USE_REDIS,
-        redis=RedisSettings(
-            host=REDIS_HOST,
-            port=REDIS_PORT,
-            db=REDIS_DB,
-            password=REDIS_PASSWORD,
-            queue_key=QUEUE_KEY,
-            success_queue_key=SUCCESS_QUEUE_KEY,
+        database=str(profile_data["database_name"]),
+        table=str(profile_data["table_name"]),
+        columns=str(profile_data["columns"]),
+        conditions=profile_data.get("conditions"),
+        cursor_field=profile_data.get("cursor_field"),
+        use_redis=bool(profile_data.get("use_redis", True)),
+        redis=_build_redis_settings(profile_data.get("redis")),
+        upload_format=UploadFormatConfig.from_dict(profile_data.get("upload_format")),
+        writeback=_build_writeback_config(profile_data.get("writeback")),
+        batch_size=int(profile_data.get("batch_size", 1000)),
+        monitor_interval=int(profile_data.get("monitor_interval", 2)),
+        threshold_ratio=float(profile_data.get("threshold_ratio", 0.2)),
+        success_queue_stable_seconds=int(
+            profile_data.get("success_queue_stable_seconds", 30)
         ),
-        upload_format=UploadFormatConfig.from_dict(UPLOAD_FORMAT),
-        writeback=WRITEBACK,
-        batch_size=BATCH_SIZE,
-        monitor_interval=MONITOR_INTERVAL,
-        threshold_ratio=THRESHOLD_RATIO,
-        success_queue_stable_seconds=SUCCESS_QUEUE_STABLE_SECONDS,
     )
+
+
+def apply_job_overrides(job: StreamJobConfig, args: argparse.Namespace) -> StreamJobConfig:
+    """CLI 参数覆盖 profile 中的部分字段。"""
+    if args.database:
+        job.database = args.database
+    if args.table:
+        job.table = args.table
+    if args.columns:
+        job.columns = args.columns
+    if args.cursor_field:
+        job.cursor_field = args.cursor_field
+    if args.conditions is not None:
+        job.conditions = args.conditions
+    if args.no_redis:
+        job.use_redis = False
+    if args.redis_host:
+        job.redis.host = args.redis_host
+    if args.redis_port is not None:
+        job.redis.port = args.redis_port
+    if args.redis_db is not None:
+        job.redis.db = args.redis_db
+    if args.redis_password is not None:
+        job.redis.password = args.redis_password or None
+    if args.queue_key:
+        job.redis.queue_key = args.queue_key
+    if args.success_queue_key:
+        job.redis.success_queue_key = args.success_queue_key
+    if args.batch_size is not None:
+        job.batch_size = args.batch_size
+    if args.monitor_interval is not None:
+        job.monitor_interval = args.monitor_interval
+    if args.threshold_ratio is not None:
+        job.threshold_ratio = args.threshold_ratio
+    if args.success_queue_stable_seconds is not None:
+        job.success_queue_stable_seconds = args.success_queue_stable_seconds
+    return job
+
+
+def build_arg_parser() -> argparse.ArgumentParser:
+    from tools.common_mysql.profile_loader import list_builtin_platforms
+
+    parser = argparse.ArgumentParser(description="MySQL 表数据流式读取（Redis 队列 / 直接写回）")
+    platform_group = parser.add_mutually_exclusive_group(required=True)
+    platform_group.add_argument(
+        "--platform",
+        choices=list_builtin_platforms(),
+        help=f"内置平台配置（{', '.join(list_builtin_platforms()) or '无'}）",
+    )
+    platform_group.add_argument(
+        "--profile",
+        help="自定义 profile JSON 路径（与 --platform 二选一）",
+    )
+
+    parser.add_argument("--database", help="覆盖 profile 中的 database_name")
+    parser.add_argument("--table", help="覆盖 profile 中的 table_name")
+    parser.add_argument("--columns", help="覆盖 profile 中的 columns")
+    parser.add_argument("--cursor-field", help="覆盖 profile 中的 cursor_field")
+    parser.add_argument("--conditions", help="覆盖 profile 中的 conditions SQL 片段")
+    parser.add_argument("--no-redis", action="store_true", help="非 Redis 模式，仅读取并由回调写回")
+
+    parser.add_argument("--redis-host", help="覆盖 Redis host")
+    parser.add_argument("--redis-port", type=int, help="覆盖 Redis port")
+    parser.add_argument("--redis-db", type=int, help="覆盖 Redis db")
+    parser.add_argument("--redis-password", default=None, help="覆盖 Redis password")
+    parser.add_argument("--queue-key", help="覆盖 Redis 任务队列 key")
+    parser.add_argument("--success-queue-key", help="覆盖 Redis 成功队列 key")
+
+    parser.add_argument("--batch-size", type=int, help="覆盖批次大小")
+    parser.add_argument("--monitor-interval", type=int, help="覆盖队列监控间隔（秒）")
+    parser.add_argument("--threshold-ratio", type=float, help="覆盖队列阈值比例")
+    parser.add_argument(
+        "--success-queue-stable-seconds",
+        type=int,
+        help="覆盖成功队列稳定等待秒数",
+    )
+    return parser
+
+
+def resolve_platform_key(args: argparse.Namespace) -> str:
+    if args.profile:
+        return args.profile
+    if args.platform:
+        return args.platform
+    raise SystemExit("请指定 --platform 或 --profile")
 
 
 async def example_non_redis_process_batch(
@@ -1326,8 +1408,7 @@ async def example_non_redis_process_batch(
         logger.info("外部处理完成，本批写回 %s 条", affected)
 
 
-async def main():
-    job = build_job_from_main()
+async def run_job(job: StreamJobConfig) -> None:
     logger.info(
         "启动任务: db=%s table=%s redis=%s format=%s",
         job.database,
@@ -1344,7 +1425,7 @@ async def main():
     logger.info("任务完成")
 
 
-if __name__ == "__main__":
+def main(argv: list[str] | None = None) -> None:
     try:
         import aiomysql  # noqa: F401
         import redis.asyncio  # noqa: F401
@@ -1352,8 +1433,24 @@ if __name__ == "__main__":
         logger.error("请先安装依赖: pip install aiomysql redis")
         raise SystemExit(1)
 
-    if not build_job_from_main().database:
-        logger.error("请配置 DATABASE")
+    from tools.common_mysql.profile_loader import load_profile_data
+
+    parser = build_arg_parser()
+    args = parser.parse_args(argv)
+
+    platform_key = resolve_platform_key(args)
+    try:
+        profile_data = load_profile_data(platform_key)
+    except (FileNotFoundError, ValueError) as exc:
+        raise SystemExit(str(exc)) from exc
+
+    job = apply_job_overrides(build_stream_job_config(profile_data), args)
+    if not job.database:
+        logger.error("profile 未配置 database_name")
         raise SystemExit(1)
 
-    asyncio.run(main())
+    asyncio.run(run_job(job))
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,33 @@
+{
+  "platform_key": "maven",
+  "database_name": "api_data",
+  "table_name": "maven_purl_html_bill_status_central",
+  "columns": "purl, repo_id",
+  "cursor_field": "purl",
+  "conditions": "is_finish = 0",
+  "use_redis": true,
+  "redis": {
+    "host": "47.239.232.1",
+    "port": 16379,
+    "db": 1,
+    "password": null,
+    "queue_key": "maven_html:urls",
+    "success_queue_key": "maven_html:index_success_urls"
+  },
+  "upload_format": {
+    "type": "dict",
+    "field": ["purl", "repo_id"]
+  },
+  "writeback": {
+    "id_field": "purl",
+    "pending_condition": "is_finish = 0",
+    "update_fields": {
+      "is_finish": 1,
+      "updated_time": "NOW()"
+    }
+  },
+  "batch_size": 1000,
+  "monitor_interval": 2,
+  "threshold_ratio": 0.2,
+  "success_queue_stable_seconds": 30
+}
