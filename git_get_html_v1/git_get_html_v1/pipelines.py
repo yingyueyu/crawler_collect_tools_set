@@ -27,6 +27,7 @@ _BUCKET_BY_INFO = {
     "npm_html": "npm",
     "pypi_html": "pypi-new",
     "go_html": "golang-new",
+    "nuget_html": "nuget-new",
 }
 
 
@@ -100,53 +101,37 @@ class GitGetHtmlPipeline:
         save_success = None
         self.redis_key = RedisKeyManager(spider.name)
         if item['info'] == 'github_html':
-            print('github_html')
             files.minio_client_61.put_file('github-new', item['name'], item['html'])
-            print('页面html保存成功-----', item['name'])
+            print(f'{item["info"]}:{item["url"]}, {item["name"]} 页面保存成功-------')
             # print(item['html'])
-            with open('github_success.text', 'a', encoding='utf-8') as f:
-                f.write(item['url'] + '\n')
-                print('github_url保存成功-------', item['url'])
+            # with open('github_success.text', 'a', encoding='utf-8') as f:
+            #     f.write(item['url'] + '\n')
+            #     print('github_url保存成功-------', item['url'])
             save_success = True
         elif item['info'] == 'npm_html':
-            print('npm_html')
             # 61
             files.minio_client_61.put_file('npm', item['name'], item['html'])
             print('页面保存成功-------', item['name'])
-            with open('npm_success.text', 'a', encoding='utf-8') as f:
-                f.write(item['url'] + '\n')
-                print('npm_url保存成功-------', item['url'])
+            # with open('npm_success.text', 'a', encoding='utf-8') as f:
+            #     f.write(item['url'] + '\n')
+            print(f'{item["info"]}:{item["url"]}, {item["name"]} 页面保存成功-------')
             save_success = True
         elif item['info'] == 'pypi_html':
-            print('pypi_html')
             files.minio_client_61.put_file('pypi-new', item['name'], item['html'])
-            print('页面保存成功-------', item['name'])
+            print(f'{item["info"]}:{item["url"]}, {item["name"]} 页面保存成功-------')
             save_success = True
         elif item['info'] == 'go_html':
-            print('go_html')
             files.minio_client_61.put_file('golang-2026', item['name'], item['html'])
-            print('页面保存成功-------', item['name'])
+            print(f'{item["info"]}:{item["url"]}, {item["name"]} 页面保存成功-------')
+            save_success = True
+        elif item['info'] == 'nuget_html':
+            files.minio_client_61.put_file('nuget-new', item['name'], item['html'])
+            print(f'{item["info"]}:{item["url"]}, {item["name"]} 页面保存成功-------')
             save_success = True
         if save_success:
             # 从run_urls中移除url
             self.redis_client.lrem(self.redis_key.run_key, 0, item['url'])
             # 写入到success_urls
-            self.redis_client.lpush(self.redis_key.success_key, item['purl'])
-            # print(item['html'])
-            # with open('pypi_success.txt', 'a', encoding='utf-8') as f:
-            #     f.write(item['url'] + '\n')
-            #     print('pypi_url保存成功-------', item['url'])
-            # files.minio_client_99.put_file('maven', item['name'], item['html'])
-            # print('页面html保存成功-----')
-            # with open('maven_success.text', 'a', encoding='utf-8') as f:
-            #     f.write(item['url'] + '\n')
-            # 99
-            # files.minio_client_99.put_file('pypi', item['name'], item['html'])
-            # print('页面保存成功-------')
-            # with open('pypi_success.text', 'a', encoding='utf-8') as f:
-            #     f.write(item['url'] + '\n')
+            self.redis_client.lpush(self.redis_key.success_key, item.get('purl') or item['url'])
+
         return item
-        #     print('gitlab_html')
-        #     print(item['html'])
-        # elif item['info'] == 'gitee_html':
-        #     print('gitee_html')

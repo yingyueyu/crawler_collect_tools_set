@@ -304,7 +304,7 @@ class GitGetHtmlDownloaderMiddleware:
                 retryreq = request.copy()
                 retryreq.meta["retry_times"] = retries
                 retryreq.meta["download_timeout"] = new_timeout
-                retryreq.meta["proxy"] = self.http_proxy
+                retryreq.meta["proxy"] = request.meta.get("proxy") or self.http_proxy
                 retryreq.dont_filter = True
                 if rotate_fingerprint:
                     new_fp = sync_request_impersonate(retryreq, impersonate=pick_impersonate())
