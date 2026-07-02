@@ -1,15 +1,12 @@
 """
-仅消费 Redis 成功队列，回写 MySQL is_finish=1。
+仅消费 Redis 成功队列，回写 MySQL is_finish=1（本目录旧版入口，已弃用）。
+
+请改用通用独立模块::
+
+    python tools/common_mysql/drain_success_queue_to_mysql.py --platform maven
 
 用于先消化 maven_html:index_success_urls 等积压，不推送新爬取任务。
 与 write_data_from_db.py 并行运行 SuccessQueueMonitor 时可能产生锁竞争，请先停掉后者。
-
-用法:
-    cd write_data_to_redis_by_DB
-    python drain_success_queue_to_mysql.py
-
-    python drain_success_queue_to_mysql.py --batch-size 500 --update-chunk-size 100
-    python drain_success_queue_to_mysql.py --once   # 只处理一批后退出
 """
 from __future__ import annotations
 

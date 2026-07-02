@@ -26,6 +26,10 @@ Redis 上传格式示例（查询字段 purl, repo_id）::
     - use_redis=False  : MysqlTableReader 只负责读取；外部流程处理完后调用
                          MysqlWritebackClient.writeback(...) 写回
 
+仅消费成功队列（独立入口，不依赖本模块）::
+
+    python tools/common_mysql/drain_success_queue_to_mysql.py --platform maven
+
 非 Redis 典型用法::
 
     async def my_process_batch(rows, writeback, job):
@@ -44,16 +48,11 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import json
-import logging
-import re
 import sys
 import time
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
-from urllib.parse import unquote
 
 import aiomysql
 import redis.asyncio as redis
@@ -64,234 +63,25 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from tools.common_mysql.config import MySQLConfig
-
-MYSQL_CFG = MySQLConfig.from_env()
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    handlers=[logging.StreamHandler()],
+from tools.common_mysql.stream_job_config import (
+    MYSQL_CFG,
+    RedisSettings,
+    StreamJobConfig,
+    UploadFormatConfig,
+    WritebackConfig,
+    build_stream_job_config,
+    build_update_set_clause,
+    build_where_clause,
+    close_redis_client,
+    create_mysql_pool,
+    format_redis_payload,
+    logger,
+    mysql_config_to_dict,
+    redis_call,
+    resolve_id_field,
+    resolve_platform_key,
 )
-logger = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# 任务配置（也可在 main() 中组装）
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class RedisSettings:
-    host: str = "127.0.0.1"
-    port: int = 6379
-    db: int = 0
-    password: str | None = None
-    queue_key: str = ""
-    success_queue_key: str = ""
-
-
-@dataclass
-class UploadFormatConfig:
-    """
-    Redis 队列单条 payload 格式。
-
-    - type=text : 取单个字段字符串
-    - type=dict : 取多字段组成 JSON 对象字符串
-    """
-
-    type: str = "text"
-    field: str | list[str] = ""
-
-    @classmethod
-    def from_dict(cls, data: dict | None) -> UploadFormatConfig:
-        if not data:
-            return cls()
-        typ = str(data.get("type", "text")).strip().lower()
-        raw_field = data.get("field")
-        if raw_field is None:
-            raw_field = data.get("fields") or data.get("filed") or ""
-        return cls(type=typ, field=raw_field)
-
-
-@dataclass
-class WritebackConfig:
-    """写回 MySQL 时的主键与 UPDATE 字段。"""
-
-    id_field: str = "purl"
-    pending_condition: str = "is_finish = 0"
-    update_fields: dict[str, Any] = field(
-        default_factory=lambda: {"is_finish": 1, "updated_time": "NOW()"}
-    )
-
-
-@dataclass
-class StreamJobConfig:
-    database: str
-    table: str
-    columns: str
-    conditions: str | dict | list | None = None
-    cursor_field: str | None = None
-    use_redis: bool = True
-    redis: RedisSettings = field(default_factory=RedisSettings)
-    upload_format: UploadFormatConfig = field(default_factory=UploadFormatConfig)
-    writeback: WritebackConfig = field(default_factory=WritebackConfig)
-    batch_size: int = 1000
-    monitor_interval: int = 2
-    threshold_ratio: float = 0.2
-    success_queue_stable_seconds: int = 30
-
-
-# ---------------------------------------------------------------------------
-# 工具函数
-# ---------------------------------------------------------------------------
-
-
-def mysql_config_to_dict(cfg: MySQLConfig, database: str | None = None) -> dict:
-    return {
-        "host": cfg.host,
-        "port": cfg.port,
-        "user": cfg.user,
-        "password": cfg.password,
-        "database": database or cfg.database,
-    }
-
-
-async def create_mysql_pool(mysql_config: dict, cfg: MySQLConfig | None = None):
-    pool_cfg = cfg or MYSQL_CFG
-    return await aiomysql.create_pool(
-        host=mysql_config["host"],
-        port=mysql_config["port"],
-        user=mysql_config["user"],
-        password=mysql_config["password"],
-        db=mysql_config["database"],
-        charset=pool_cfg.charset,
-        autocommit=True,
-        minsize=pool_cfg.minsize,
-        maxsize=pool_cfg.maxsize,
-        connect_timeout=pool_cfg.connect_timeout,
-        pool_recycle=pool_cfg.pool_recycle,
-    )
-
-
-async def redis_call(result):
-    if asyncio.iscoroutine(result):
-        return await result
-    return result
-
-
-async def close_redis_client(client):
-    if client is None:
-        return
-    close_fn = getattr(client, "aclose", None) or client.close
-    result = close_fn()
-    if asyncio.iscoroutine(result):
-        await result
-
-
-def resolve_id_field(columns: str, id_field: str | None = None) -> str:
-    if id_field:
-        return id_field
-    if columns and columns.strip() != "*":
-        parts = [p.strip() for p in columns.split(",") if p.strip()]
-        if len(parts) == 1:
-            return parts[0]
-    return "lower_purl"
-
-
-def build_where_clause(conditions=None) -> tuple[str, list]:
-    if conditions is None:
-        return "", []
-
-    if isinstance(conditions, str):
-        return conditions, []
-
-    if isinstance(conditions, dict):
-        clauses = []
-        params = []
-        for key, value in conditions.items():
-            clauses.append(f"{key} = %s")
-            params.append(value)
-        if clauses:
-            return " AND ".join(clauses), params
-        return "", []
-
-    if isinstance(conditions, list):
-        clauses = []
-        params = []
-        for field_name, operator, value in conditions:
-            clauses.append(f"{field_name} {operator} %s")
-            params.append(value)
-        if clauses:
-            return " AND ".join(clauses), params
-        return "", []
-
-    logger.warning("不支持的条件格式: %s", type(conditions))
-    return "", []
-
-
-def format_redis_payload(row: dict, fmt: UploadFormatConfig) -> str:
-    if fmt.type == "dict":
-        field_list = fmt.field if isinstance(fmt.field, list) else [fmt.field]
-        field_list = [f for f in field_list if f]
-        payload = {name: row.get(name) for name in field_list}
-        return json.dumps(payload, ensure_ascii=False)
-    field_name = fmt.field if isinstance(fmt.field, str) else (fmt.field[0] if fmt.field else "")
-    return str(row.get(field_name, ""))
-
-
-def build_update_set_clause(update_fields: dict[str, Any]) -> tuple[str, list]:
-    set_parts: list[str] = []
-    params: list[Any] = []
-    for key, value in update_fields.items():
-        if isinstance(value, str) and value.upper() == "NOW()":
-            set_parts.append(f"{key} = NOW()")
-        else:
-            set_parts.append(f"{key} = %s")
-            params.append(value)
-    return ", ".join(set_parts), params
-
-
-def normalize_queue_id(value: str) -> str:
-    value = (value or "").strip()
-    if not value:
-        return value
-    if value.startswith("pkg:"):
-        return value
-
-    maven_match = re.match(
-        r"https?://(?:www\.)?mvnrepository\.com/artifact/([^/?#]+)/([^/?#]+)",
-        value,
-        re.I,
-    )
-    if maven_match:
-        group_id = unquote(maven_match.group(1))
-        artifact_id = unquote(maven_match.group(2))
-        return f"pkg:maven/{group_id}/{artifact_id}"
-
-    npm_match = re.match(r"https?://www\.npmjs\.com/package/(.+)", value, re.I)
-    if npm_match:
-        return f"pkg:npm/{unquote(npm_match.group(1))}"
-
-    pypi_match = re.match(r"https?://pypi\.org/project/([^/?#]+)", value, re.I)
-    if pypi_match:
-        return f"pkg:pypi/{unquote(pypi_match.group(1))}"
-
-    return value
-
-
-def extract_id_from_queue_item(
-    item: str,
-    id_field: str,
-    upload_format: UploadFormatConfig,
-) -> str:
-    if upload_format.type == "dict":
-        try:
-            data = json.loads(item)
-            if isinstance(data, dict) and id_field in data:
-                return str(data[id_field])
-        except json.JSONDecodeError:
-            pass
-    return normalize_queue_id(item)
+from tools.common_mysql.success_queue import SuccessQueueMonitor
 
 
 # ---------------------------------------------------------------------------
@@ -493,247 +283,6 @@ class MySQLToRedisStreamer:
     def stop(self):
         self.stop_event.set()
 
-
-# ---------------------------------------------------------------------------
-# Redis 成功队列 -> MySQL 写回
-# ---------------------------------------------------------------------------
-
-
-class SuccessQueueMonitor:
-    def __init__(
-        self,
-        mysql_config: dict,
-        redis_settings: RedisSettings,
-        writeback: WritebackConfig,
-        upload_format: UploadFormatConfig | None = None,
-        batch_size: int = 1000,
-        monitor_interval: int = 5,
-        mysql_cfg: MySQLConfig | None = None,
-    ):
-        self.mysql_config = mysql_config
-        self.redis_settings = redis_settings
-        self.writeback = writeback
-        self.upload_format = upload_format or UploadFormatConfig()
-        self.batch_size = batch_size
-        self.monitor_interval = monitor_interval
-        self.mysql_cfg = mysql_cfg or MYSQL_CFG
-        self.redis_client = None
-        self.mysql_pool = None
-        self.stop_event = asyncio.Event()
-        self.total_processed = 0
-        self.total_queue_consumed = 0
-        self.total_skipped = 0
-        self.update_chunk_size = 500
-        self.update_max_retries = 3
-
-    @property
-    def id_field(self) -> str:
-        return self.writeback.id_field
-
-    @property
-    def success_queue_key(self) -> str:
-        return self.redis_settings.success_queue_key
-
-    async def init_connections(self):
-        redis_kwargs = {
-            "host": self.redis_settings.host,
-            "port": self.redis_settings.port,
-            "db": self.redis_settings.db,
-            "decode_responses": True,
-        }
-        if self.redis_settings.password:
-            redis_kwargs["password"] = self.redis_settings.password
-
-        self.redis_client = redis.Redis(**redis_kwargs)
-        await redis_call(self.redis_client.ping())
-        self.mysql_pool = await create_mysql_pool(self.mysql_config, self.mysql_cfg)
-        logger.info("成功队列监控器已连接 Redis / MySQL")
-
-    async def get_queue_length(self) -> int:
-        try:
-            return await redis_call(self.redis_client.llen(self.success_queue_key))
-        except Exception as exc:
-            logger.error("获取成功队列长度失败: %s", exc)
-            return -1
-
-    async def fetch_batch_from_queue(self) -> list:
-        try:
-            return await redis_call(
-                self.redis_client.lrange(self.success_queue_key, 0, self.batch_size - 1)
-            )
-        except Exception as exc:
-            logger.error("从队列获取数据失败: %s", exc)
-            return []
-
-    async def remove_from_queue(self, count: int):
-        await redis_call(self.redis_client.ltrim(self.success_queue_key, count, -1))
-
-    async def _filter_pending_ids(self, table_name: str, ids: list) -> list:
-        if not ids:
-            return []
-
-        pending = []
-        chunks = [ids[i : i + self.update_chunk_size] for i in range(0, len(ids), self.update_chunk_size)]
-        for chunk in chunks:
-            placeholders = ",".join(["%s"] * len(chunk))
-            query = (
-                f"SELECT {self.id_field} FROM {table_name} "
-                f"WHERE {self.id_field} IN ({placeholders}) "
-                f"AND ({self.writeback.pending_condition})"
-            )
-            async with self.mysql_pool.acquire() as conn:
-                async with conn.cursor() as cur:
-                    await cur.execute(query, tuple(chunk))
-                    rows = await cur.fetchall()
-                    pending.extend(row[0] for row in rows)
-        return pending
-
-    async def _execute_update_chunk(self, table_name: str, ids: list) -> int:
-        placeholders = ",".join(["%s"] * len(ids))
-        set_clause, set_params = build_update_set_clause(self.writeback.update_fields)
-        update_query = f"""
-            UPDATE {table_name}
-            SET {set_clause}
-            WHERE {self.id_field} IN ({placeholders})
-              AND ({self.writeback.pending_condition})
-        """
-        async with self.mysql_pool.acquire() as conn:
-            async with conn.cursor() as cur:
-                await cur.execute(update_query, tuple(set_params) + tuple(ids))
-                return cur.rowcount
-
-    async def update_database(self, table_name: str, ids: list) -> tuple[int, list, list]:
-        if not ids:
-            return 0, [], []
-
-        pending_ids = await self._filter_pending_ids(table_name, ids)
-        skipped_ids = [item for item in ids if item not in set(pending_ids)]
-        if skipped_ids:
-            self.total_skipped += len(skipped_ids)
-        if not pending_ids:
-            return 0, [], skipped_ids
-
-        total_affected = 0
-        chunks = [
-            pending_ids[i : i + self.update_chunk_size]
-            for i in range(0, len(pending_ids), self.update_chunk_size)
-        ]
-        for chunk_index, chunk in enumerate(chunks, start=1):
-            for attempt in range(1, self.update_max_retries + 1):
-                try:
-                    affected_rows = await self._execute_update_chunk(table_name, chunk)
-                    total_affected += affected_rows
-                    logger.info(
-                        "写回 %s 条 (分片 %s/%s)",
-                        affected_rows,
-                        chunk_index,
-                        len(chunks),
-                    )
-                    break
-                except OperationalError as exc:
-                    if attempt >= self.update_max_retries:
-                        raise
-                    await asyncio.sleep(attempt * 2)
-                    logger.warning("写回重试 %s/%s: %s", attempt, self.update_max_retries, exc)
-
-        self.total_processed += total_affected
-        return total_affected, pending_ids, skipped_ids
-
-    async def process_batch(self, table_name: str):
-        items = await self.fetch_batch_from_queue()
-        if not items:
-            return
-
-        ids = []
-        for item in items:
-            if item:
-                ids.append(
-                    extract_id_from_queue_item(item, self.id_field, self.upload_format)
-                )
-
-        if not ids:
-            return
-
-        unique_ids = list(dict.fromkeys(ids))
-        newly_completed, _pending_ids, _skipped_ids = await self.update_database(
-            table_name, unique_ids
-        )
-        await self.remove_from_queue(len(items))
-        self.total_queue_consumed += len(items)
-        logger.info(
-            "成功队列批次: 消费 %s | 去重 %s | 写回 %s | 累计写回 %s",
-            len(items),
-            len(unique_ids),
-            newly_completed,
-            self.total_processed,
-        )
-
-    async def _monitor_once(self, table_name: str, *, require_threshold: bool = True):
-        queue_length = await self.get_queue_length()
-        if queue_length <= 0:
-            return
-        if require_threshold and queue_length < self.batch_size:
-            return
-        await self.process_batch(table_name)
-
-    async def _wait_queue_stable(self, stable_seconds: int) -> int:
-        last_length = await self.get_queue_length()
-        stable_since = time.time()
-        while not self.stop_event.is_set():
-            await asyncio.sleep(1)
-            current_length = await self.get_queue_length()
-            if current_length < 0:
-                continue
-            if current_length > last_length:
-                last_length = current_length
-                stable_since = time.time()
-            elif time.time() - stable_since >= stable_seconds:
-                return current_length
-        return last_length
-
-    async def _drain_all(self, table_name: str):
-        while not self.stop_event.is_set():
-            if await self.get_queue_length() <= 0:
-                break
-            await self.process_batch(table_name)
-            await asyncio.sleep(self.monitor_interval)
-
-    async def close(self):
-        await close_redis_client(self.redis_client)
-        self.redis_client = None
-        if self.mysql_pool:
-            self.mysql_pool.close()
-            await self.mysql_pool.wait_closed()
-            self.mysql_pool = None
-
-    async def run_phases(
-        self,
-        table_name: str,
-        streamer_done: asyncio.Event,
-        stable_seconds: int = 30,
-    ):
-        await self.init_connections()
-        try:
-            while not streamer_done.is_set() and not self.stop_event.is_set():
-                await self._monitor_once(table_name, require_threshold=True)
-                await asyncio.sleep(self.monitor_interval)
-
-            if self.stop_event.is_set():
-                return
-
-            await self._wait_queue_stable(stable_seconds)
-            await self._drain_all(table_name)
-            logger.info(
-                "成功队列收尾完成，累计写回 %s，消费 %s，跳过 %s",
-                self.total_processed,
-                self.total_queue_consumed,
-                self.total_skipped,
-            )
-        finally:
-            await self.close()
-
-    def stop(self):
-        self.stop_event.set()
 
 
 # ---------------------------------------------------------------------------
@@ -1254,49 +803,6 @@ async def run_stream_job(
         raise upload_error
 
 
-def _build_redis_settings(data: dict | None) -> RedisSettings:
-    raw = data or {}
-    return RedisSettings(
-        host=str(raw.get("host", "127.0.0.1")),
-        port=int(raw.get("port", 6379)),
-        db=int(raw.get("db", 0)),
-        password=raw.get("password"),
-        queue_key=str(raw.get("queue_key", "")),
-        success_queue_key=str(raw.get("success_queue_key", "")),
-    )
-
-
-def _build_writeback_config(data: dict | None) -> WritebackConfig:
-    raw = data or {}
-    update_fields = raw.get("update_fields")
-    if update_fields is None:
-        update_fields = {"is_finish": 1, "updated_time": "NOW()"}
-    return WritebackConfig(
-        id_field=str(raw.get("id_field", "purl")),
-        pending_condition=str(raw.get("pending_condition", "is_finish = 0")),
-        update_fields=update_fields,
-    )
-
-
-def build_stream_job_config(profile_data: dict) -> StreamJobConfig:
-    """将 profile 字典转为 StreamJobConfig。"""
-    return StreamJobConfig(
-        database=str(profile_data["database_name"]),
-        table=str(profile_data["table_name"]),
-        columns=str(profile_data["columns"]),
-        conditions=profile_data.get("conditions"),
-        cursor_field=profile_data.get("cursor_field"),
-        use_redis=bool(profile_data.get("use_redis", True)),
-        redis=_build_redis_settings(profile_data.get("redis")),
-        upload_format=UploadFormatConfig.from_dict(profile_data.get("upload_format")),
-        writeback=_build_writeback_config(profile_data.get("writeback")),
-        batch_size=int(profile_data.get("batch_size", 1000)),
-        monitor_interval=int(profile_data.get("monitor_interval", 2)),
-        threshold_ratio=float(profile_data.get("threshold_ratio", 0.2)),
-        success_queue_stable_seconds=int(
-            profile_data.get("success_queue_stable_seconds", 30)
-        ),
-    )
 
 
 def apply_job_overrides(job: StreamJobConfig, args: argparse.Namespace) -> StreamJobConfig:
@@ -1376,12 +882,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def resolve_platform_key(args: argparse.Namespace) -> str:
-    if args.profile:
-        return args.profile
-    if args.platform:
-        return args.platform
-    raise SystemExit("请指定 --platform 或 --profile")
 
 
 async def example_non_redis_process_batch(
