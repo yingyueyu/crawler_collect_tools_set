@@ -21,8 +21,8 @@ REDIS_DB = REDIS_GIT_GET_HTML["db"]
 # REDIS_PORT = 6379
 # REDIS_DB = 0
 # Scrapy-Redis使用的键名
-SCHEDULER_QUEUE_KEY = 'github_html:urls'  # 默认请求队列键
-CHECKPOINT_KEY = 'github_html:checkpoint'  # 断点续传键
+# SCHEDULER_QUEUE_KEY = 'github_html:urls'  # 默认请求队列键
+# CHECKPOINT_KEY = 'github_html:checkpoint'  # 断点续传键
 
 # SCHEDULER_QUEUE_KEY = 'maven_html:urls'  # 默认请求队列键
 # CHECKPOINT_KEY = 'maven_html:checkpoint'  # 断点续传键
@@ -31,8 +31,12 @@ CHECKPOINT_KEY = 'github_html:checkpoint'  # 断点续传键
 # CHECKPOINT_KEY = 'go_html:checkpoint'  # 断点续传键
 
 
+SCHEDULER_QUEUE_KEY = 'pypi_html:urls'  # 默认请求队列键
+CHECKPOINT_KEY = 'pypi_html:checkpoint'  # 断点续传键
+
+
 # 导入配置
-CSV_PATH = 'github_100_200_url.csv'
+CSV_PATH = 'test_code/test_purl_list.csv'
 BATCH_SIZE = 200  # 每批处理数量
 WAIT_INTERVAL = 5  # 检查间隔（秒）
 MAX_WAIT_TIME = 300  # 最大等待时间（秒）

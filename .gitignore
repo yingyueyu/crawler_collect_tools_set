@@ -14,3 +14,7 @@ tools/key_token_config/secrets.py
 # 运行时日志目录
 app_logs/
 **/app_logs/
+
+# 前缀带test_的文件夹和文件
+test_*
+

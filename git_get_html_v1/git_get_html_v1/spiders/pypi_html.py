@@ -19,10 +19,10 @@ class PypiHtmlSpider(RedisSpider):
     allowed_domains = ["pypi.org"]
     redis_key = "pypi_html:urls"
     custom_settings = {
-        "CONCURRENT_REQUESTS": 4,
+        "CONCURRENT_REQUESTS": 1,
         "DOWNLOAD_DELAY": 0.5,
         "DOWNLOAD_TIMEOUT": 30,
-        "RETRY_TIMES": 5,
+        "RETRY_TIMES": 3,
     }
 
     def __init__(self):
