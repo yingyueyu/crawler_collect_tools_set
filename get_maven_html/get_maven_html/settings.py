@@ -7,6 +7,21 @@
 #     https://docs.scrapy.org/en/latest/topics/downloader-middleware.html
 #     https://docs.scrapy.org/en/latest/topics/spider-middleware.html
 
+import sys
+from pathlib import Path
+
+
+def _repo_root() -> Path:
+    for parent in Path(__file__).resolve().parents:
+        if (parent / "tools" / "key_token_config").is_dir():
+            return parent
+    raise RuntimeError("cannot find repository root (tools/key_token_config)")
+
+
+_ROOT = _repo_root()
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
 BOT_NAME = "get_maven_html"
 
 SPIDER_MODULES = ["get_maven_html.spiders"]

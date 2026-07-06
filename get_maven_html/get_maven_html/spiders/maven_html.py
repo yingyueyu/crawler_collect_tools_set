@@ -48,8 +48,8 @@ def get_groupId_and_artifactId(purl: str) -> tuple[str, str]:
 class MavenHtmlSpider(RedisSpider):
     name = "maven_html"
     allowed_domains = ["mvnrepository.com"]
-    redis_key = 'maven_html:urls'
-    # start_urls = ["https://mvnrepository.com/artifact/org.tpolecat/skunk-circe_3/1.1.0-M3"]
+    redis_key = "maven_html:urls"
+    start_urls: list[str] = []
     custom_settings = {
         "TWISTED_REACTOR": "twisted.internet.asyncioreactor.AsyncioSelectorReactor",
         "USER_AGENT": None,
@@ -61,7 +61,8 @@ class MavenHtmlSpider(RedisSpider):
         #     "scrapy_impersonate.RandomBrowserMiddleware": 1000,
         # },
     }
-    def __init__(self):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
         self.headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:149.0) Gecko/20100101 Firefox/149.0",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
