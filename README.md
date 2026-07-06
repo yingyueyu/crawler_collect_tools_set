@@ -114,6 +114,7 @@ python tools/common_mysql/drain_success_queue_to_mysql.py --platform maven
 | `pypi_html` | `pypi_html:urls` | `pypi-new` | PyPI 项目页（含 Cloudflare 处理） |
 | `go_html` | `go_html:urls` | `golang-2026` | pkg.go.dev 模块页 |
 | `nuget_html` | `nuget_html:urls` | `nuget-new` | nuget.org 包页 |
+| `maven_html` | `maven_html:urls` | `mvn-2026` | mvnrepository.com（Central/Google 过滤） |
 | `gitlab_html` | `gitlab_html:urls` | — | GitLab（pipeline 待完善） |
 | `gitee_html` | `gitee_html:urls` | — | Gitee（pipeline 待完善） |
 

@@ -101,3 +101,33 @@ def is_valid_go_html(text):
         or "unitheader-title" in lower
         or "unitdetails" in lower
     )
+
+
+PYPI_BLOCKED_MARKERS = (
+    "A required part of this site couldn't load. This may be due to a browser",
+    "A required part of this site couldn\u2019t load. This may be due to a browse",
+)
+
+
+def is_pypi_challenge_shell(text):
+    text = text or ""
+    return "Client Challenge" in text or (len(text) < 5000 and "_fs-ch-" in text)
+
+
+def is_pypi_blocked(text):
+    if is_pypi_challenge_shell(text):
+        return False
+    return any(marker in (text or "") for marker in PYPI_BLOCKED_MARKERS)
+
+
+def is_valid_pypi_html(text):
+    """过滤 PyPI Cloudflare 挑战壳页与拦截页。"""
+    if not text or is_pypi_challenge_shell(text) or is_pypi_blocked(text):
+        return False
+    lower = text.lower()
+    return len(text) > 5000 and "pypi.org" in lower and (
+        "/static/css/warehouse" in lower
+        or " · pypi</title>" in lower
+        or "project-description" in lower
+        or "package-header" in lower
+    )

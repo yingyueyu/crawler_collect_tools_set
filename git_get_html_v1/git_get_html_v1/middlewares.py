@@ -5,6 +5,8 @@ import re
 import scrapy
 from scrapy.core.downloader.handlers.http11 import TunnelError
 from scrapy.exceptions import IgnoreRequest
+from scrapy.http import HtmlResponse
+from twisted.internet import threads
 from twisted.internet.error import (
     ConnectionLost,
     ConnectError,
@@ -88,7 +90,31 @@ class GitGetHtmlDownloaderMiddleware:
         # spider 已设置 impersonate 时保持不动，仅同步 headers
         if request.meta.get("impersonate"):
             sync_request_impersonate(request)
+        # PyPI 过盾必须在同一 curl_cffi Session 内完成，不能拆成多个 Scrapy 请求
+        if spider.name == "pypi_html" and request.meta.get("pypi_cf_handled"):
+            d = threads.deferToThread(self._fetch_pypi_html, request)
+            d.addCallback(self._build_pypi_html_response, request)
+            return d
         return None
+
+    @staticmethod
+    def _fetch_pypi_html(request):
+        from .utils.pypi_cf_fetch import fetch_pypi_html
+
+        return fetch_pypi_html(request.meta["url"], proxy=request.meta.get("proxy"))
+
+    @staticmethod
+    def _build_pypi_html_response(result, request):
+        html_text, status, latency = result
+        response = HtmlResponse(
+            url=request.meta["url"],
+            status=status or 500,
+            body=(html_text or "").encode("utf-8"),
+            encoding="utf-8",
+            request=request,
+        )
+        response.meta["download_latency"] = latency
+        return response
 
     def _is_pypi_cloudflare(self, response):
         return any(marker in response.text for marker in PYPI_CLOUDFLARE_MARKERS)
@@ -142,7 +168,8 @@ class GitGetHtmlDownloaderMiddleware:
                 self.redis_client.lpush(self.keys.timeout_key, request.url)
                 raise IgnoreRequest()
 
-            if self._is_pypi_cloudflare(response):
+            # pypi_html 爬虫在 spider 内显式走 script.js → PoW → 再 GET 全流程
+            if spider.name != "pypi_html" and self._is_pypi_cloudflare(response):
                 reload_req = self._build_pypi_reload_request(request, response)
                 if reload_req is not None:
                     return reload_req
