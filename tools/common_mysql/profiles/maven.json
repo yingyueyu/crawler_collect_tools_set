@@ -12,7 +12,7 @@
     "db": 1,
     "password": null,
     "queue_key": "maven_html:urls",
-    "success_queue_key": "maven_html:index_success_urls"
+    "success_queue_key": "maven_html:success_urls"
   },
   "upload_format": {
     "type": "dict",
