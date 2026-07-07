@@ -163,9 +163,6 @@ class MinIOClient(object):
 
 minio_client = MinIOClient(service=configs['url'], access_key=configs['accessKey'], secret_key=configs['secretKey'], secure=False)
 
-minio_client_99 = MinIOClient(service=configs_99['url'], access_key=configs_99['accessKey'], secret_key=configs_99['secretKey'], secure=False)
-
-minio_client_168 = MinIOClient(service=configs_168['url'], access_key=configs_168['accessKey'], secret_key=configs_168['secretKey'], secure=False)
 
 minio_client_test = MinIOClient(service=configs_test['url'], access_key=configs_test['accessKey'], secret_key=configs_test['secretKey'], secure=False)
 

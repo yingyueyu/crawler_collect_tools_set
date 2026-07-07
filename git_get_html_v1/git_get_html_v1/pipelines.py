@@ -27,6 +27,8 @@ _BUCKET_BY_INFO = {
     "go_html": "golang-2026",
     "nuget_html": "nuget-new",
     "maven_html": "mvn-2026",
+    "gitee_html": "gitee",
+    "gitlab_html": "gitlab",
 }
 
 
@@ -57,7 +59,7 @@ class GitGetHtmlPipeline:
     def _on_minio_saved(self, result, item, spider):
         label = item["info"].replace("_html", "")
         if isinstance(result, PutResult) and result.ok:
-            print(f'{item["info"]}:{item["url"]}, {item["name"]} 页面保存成功-------')
+            spider.logger.info(f'{item["info"]}:{item["url"]}, {item["name"]} 页面保存成功-------')
             if item["info"] == "maven_html":
                 self._record_maven_success(item, spider)
             else:

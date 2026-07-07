@@ -145,10 +145,7 @@ class ResilientMinIOClient:
                     self._known_buckets.add(bucket_name)
                     return PutResult(ok=True)
                 _log.error(
-                    "MinIO 桶检查/创建失败 bucket={} code={} msg={}",
-                    bucket_name,
-                    code,
-                    _safe_log_text(msg),
+                    f"MinIO 桶检查/创建失败 bucket={bucket_name} code={code} msg={_safe_log_text(msg)}"
                 )
                 return PutResult(ok=False, error_code=code, error_message=msg, attempts=1)
 
@@ -157,10 +154,12 @@ class ResilientMinIOClient:
         bucket_name: str,
         file: str,
         file_data: str,
-        max_retries: int = 0,
+        max_retries: int = 3,
         retry_delay_base: float = 1.0,
     ) -> PutResult:
         """写入 MinIO；权限类错误立即失败，网络/503 类错误有限重试。"""
+        if max_retries < 1:
+            max_retries = 1
         bucket_check = self.ensure_bucket(bucket_name)
         if not bucket_check.ok:
             return bucket_check
@@ -188,7 +187,7 @@ class ResilientMinIOClient:
 
                 if not retryable:
                     _log.error(
-                        "MinIO 写入失败(不可重试) bucket={} file={} code={} msg={}",
+                        "MinIO 写入失败(不可重试) bucket=%s file=%s code=%s msg=%s",
                         bucket_name,
                         file,
                         code,
@@ -203,7 +202,7 @@ class ResilientMinIOClient:
 
                 if attempt >= max_retries:
                     _log.error(
-                        "MinIO 写入最终失败(已重试 {} 次) bucket={} file={} code={} msg={}",
+                        "MinIO 写入最终失败(已重试 %s 次) bucket=%s file=%s code=%s msg=%s",
                         max_retries,
                         bucket_name,
                         file,
@@ -219,7 +218,7 @@ class ResilientMinIOClient:
 
                 wait_time = retry_delay_base * (2 ** (attempt - 1)) + random.uniform(0, 0.5)
                 _log.warning(
-                    "MinIO 写入第 {} 次失败, {:.1f}s 后重试 bucket={}/{} code={} msg={}",
+                    "MinIO 写入第 %s 次失败, %.1fs 后重试 bucket=%s/%s code=%s msg=%s",
                     attempt,
                     wait_time,
                     bucket_name,

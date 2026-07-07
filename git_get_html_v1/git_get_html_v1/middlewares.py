@@ -214,6 +214,15 @@ class GitGetHtmlDownloaderMiddleware:
                     self.redis_client.lpush(self.keys.timeout_key, request.url)
                     raise IgnoreRequest()
 
+            err_msg = str(exception)
+            if "407" in err_msg or "proxy authentication" in err_msg.lower():
+                self.log_tool.error(f"代理认证失败(407): {request.url}")
+                self.redis_client.lpush(
+                    self.keys.timeout_key,
+                    request.meta.get("url", request.url),
+                )
+                raise IgnoreRequest()
+
             if isinstance(
                 exception,
                 (
@@ -281,12 +290,14 @@ class GitGetHtmlDownloaderMiddleware:
         """放弃当前请求时，将任务放回 scrapy-redis 待爬队列。"""
         task = self._task_key(request)
         url = request.meta.get("url", request.url)
+        # 待爬队列需要 URL；purl 由 spider 的 normalize_gitlab_task 等再解析
+        requeue_task = url if str(task).startswith("pkg:") else task
         queue_key = self._get_pending_queue_key(spider)
         self.redis_client.lrem(self.keys.run_key, 0, task)
         if url != task:
             self.redis_client.lrem(self.keys.run_key, 0, url)
-        self.redis_client.lpush(queue_key, task)
-        msg = f"放回待爬队列 {queue_key}: {task}"
+        self.redis_client.lpush(queue_key, requeue_task)
+        msg = f"放回待爬队列 {queue_key}: {requeue_task}"
         if reason:
             msg = f"{reason}，{msg}"
         self.log_tool.warning(msg)
