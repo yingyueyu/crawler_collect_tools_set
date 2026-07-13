@@ -63,6 +63,8 @@ class GitGetHtmlPipeline:
             if item["info"] == "maven_html":
                 self._record_maven_success(item, spider)
             else:
+                if item.get("info") == "gitlab_readme_html":
+                    return item
                 self.redis_client.lrem(self.redis_key.run_key, 0, item["url"])
                 self.redis_client.lpush(self.redis_key.success_key, item.get("purl") or item["url"])
             spider.logger.info(f"{label} html 保存成功: {item['name']}")

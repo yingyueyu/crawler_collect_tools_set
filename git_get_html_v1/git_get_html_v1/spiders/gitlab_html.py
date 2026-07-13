@@ -173,14 +173,23 @@ class GitlabHtmlSpider(RedisSpider):
         except Exception as exc:
             self.log_tool.error(f"make_request_from_data error: {exc}")
 
-    def _yield_gitlab_item(self, url, purl, file_name, html, latency=None):
-        item = {
-            "info": "gitlab_html",
-            "url": url,
-            "purl": purl,
-            "name": file_name,
-            "html": html,
-        }
+    def _yield_gitlab_item(self, url, purl, file_name, html, latency=None, type=None):
+        if type is None:
+            item = {
+                "info": "gitlab_html",
+                "url": url,
+                "purl": purl,
+                "name": file_name,
+                "html": html,
+            }
+        else:
+            item = {
+                "info": "gitlab_readme_html",
+                "url": url,
+                "purl": purl,
+                "name": file_name,
+                "html": html,
+            }
         if latency is not None:
             item["latency"] = latency
         return item
@@ -264,7 +273,7 @@ class GitlabHtmlSpider(RedisSpider):
             json_data = json.loads(response.text)
             json_name = file_name.replace(".html", ".json")
             self.log_tool.info(f"README JSON 成功 {url} -> {json_name}")
-            yield self._yield_gitlab_item(url, purl, json_name, json.dumps(json_data, ensure_ascii=False))
+            yield self._yield_gitlab_item(url, purl, json_name, json.dumps(json_data, ensure_ascii=False), type="json")
         except Exception as exc:
             self.log_tool.error(f"parse_readme error: {exc}")
 
